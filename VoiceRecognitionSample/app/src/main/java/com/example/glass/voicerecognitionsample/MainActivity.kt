@@ -15,15 +15,16 @@
  */
 package com.example.glass.voicerecognitionsample
 
+import RetrofitService
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.icu.text.SimpleDateFormat
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
-import android.provider.MediaStore
 import android.speech.RecognizerIntent
+import android.util.Base64
 import android.util.Log
 import android.view.MotionEvent
 import android.widget.ImageView
@@ -37,30 +38,43 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.content.FileProvider
 import com.example.glass.ui.GlassGestureDetector
+import com.google.gson.Gson
+import com.google.gson.GsonBuilder
 import kotlinx.android.synthetic.main.activity_main.*
+import okhttp3.*
+import retrofit2.Call
+import retrofit2.Callback
+import retrofit2.Response
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.util.*
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlin.jvm.Throws
 
 
 typealias LumaListener = (luma: Double) -> Unit
+
 
 class MainActivity : AppCompatActivity(), GlassGestureDetector.OnGestureListener {
     private var imageCapture: ImageCapture? = null
 
     private lateinit var outputDirectory: File
     private lateinit var cameraExecutor: ExecutorService
+    private lateinit var photoUri: Uri
 
+
+    private var recognized_string = " "
     private var resultTextView: TextView? = null
     private var imageView: ImageView? = null
     private var glassGestureDetector: GlassGestureDetector? = null
     private val mVoiceResults: MutableList<String> = ArrayList(4)
+
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -152,7 +166,7 @@ class MainActivity : AppCompatActivity(), GlassGestureDetector.OnGestureListener
             }
 
             override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                val savedUri = Uri.fromFile(photoFile)
+                photoUri = Uri.fromFile(photoFile)
                 val imageBitmap = BitmapFactory.decodeFile(photoFile.absolutePath);
                 imageView?.setImageBitmap(imageBitmap);
                 val msg = "Photo captured!"
@@ -207,7 +221,7 @@ class MainActivity : AppCompatActivity(), GlassGestureDetector.OnGestureListener
                 true
             }
             GlassGestureDetector.Gesture.SWIPE_BACKWARD -> {
-                takePhoto()
+                sendAPI()
                 true
             }
             GlassGestureDetector.Gesture.SWIPE_DOWN -> {
@@ -238,6 +252,7 @@ class MainActivity : AppCompatActivity(), GlassGestureDetector.OnGestureListener
         mVoiceResults.add(0, result)
         val recognizedText = java.lang.String.join(DELIMITER, mVoiceResults)
         resultTextView!!.text = recognizedText
+        recognized_string = recognizedText
     }
 
     companion object {
@@ -267,6 +282,91 @@ class MainActivity : AppCompatActivity(), GlassGestureDetector.OnGestureListener
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
+    }
+
+
+    //resize bitmap for entity size
+    fun resizeBitmap(source: Bitmap, maxLength: Int): Bitmap {
+        try {
+            if (source.height >= source.width) {
+                if (source.height <= maxLength) { // if image height already smaller than the required height
+                    return source
+                }
+
+                val aspectRatio = source.width.toDouble() / source.height.toDouble()
+                val targetWidth = (maxLength * aspectRatio).toInt()
+                val result = Bitmap.createScaledBitmap(source, targetWidth, maxLength, false)
+                return result
+            } else {
+                if (source.width <= maxLength) { // if image width already smaller than the required width
+                    return source
+                }
+
+                val aspectRatio = source.height.toDouble() / source.width.toDouble()
+                val targetHeight = (maxLength * aspectRatio).toInt()
+
+                val result = Bitmap.createScaledBitmap(source, maxLength, targetHeight, false)
+                return result
+            }
+        } catch (e: Exception) {
+            return source
+        }
+    }
+
+
+// Mobile SCAR API Implementatation
+    private fun sendAPI(){
+        val bytes = File(photoUri.path).readBytes()
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size )
+        val resized_bitmap = resizeBitmap(bitmap,800)
+
+        val baos = ByteArrayOutputStream()
+        resized_bitmap.compress(Bitmap.CompressFormat.JPEG, 100, baos)
+        val temp_b = baos.toByteArray()
+        val b = Base64.encodeToString(temp_b, Base64.DEFAULT)
+
+
+        val card = Card(
+            authorId= "a9ygkrDuTKhBEjdrc",
+            swimlaneId = "NheGqKLWdAnGMYCa3",
+            title = "HG-SCAR-dt-008",
+            description = recognized_string,
+            file = b
+        )
+
+        var gson : Gson =  GsonBuilder()
+                .setLenient()
+                .create()
+
+
+        //creating retrofit object
+        var retrofit = Retrofit.Builder()
+                    .baseUrl(" ") //!! base url required
+                    .addConverterFactory(GsonConverterFactory.create(gson))
+                    .build()
+
+        val service = retrofit.create(RetrofitService::class.java)
+
+
+        //Send card and images to server
+        service.sendSCAR(card).enqueue(object : Callback<Card> {
+            override fun onResponse(
+                    call: Call<Card>,
+                    response: Response<Card>) {
+                if(response?.isSuccessful){
+                    Toast.makeText(getApplicationContext(), "File Uploaded Successfully", Toast.LENGTH_LONG).show();
+                    Log.d(TAG, "성공 : ${response.raw()}")
+                }
+                else{
+                    Toast.makeText(getApplicationContext(), "Some error occurred", Toast.LENGTH_LONG).show();
+                    Log.d(TAG, "response : ${response.raw()}")
+                }
+            }
+
+            override fun onFailure(call: Call<Card>, t: Throwable) {
+                Log.d(TAG, "실패 : $t")
+            }
+        })
     }
 
 
